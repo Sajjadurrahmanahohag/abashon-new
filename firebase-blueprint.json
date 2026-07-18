@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "user": {
+      "title": "User Profile",
+      "description": "Tracks tenant and landlord authentication profiles, contact info, and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "maxLength": 128 },
+        "avatar": { "type": "string", "maxLength": 10 },
+        "role": { "type": "string", "enum": ["customer", "owner", "company"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "name", "role", "createdAt"]
+    },
+    "property": {
+      "title": "Property Listing",
+      "description": "Maintains detailed listing records, structural attributes, and geographical details.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "type": { "type": "string", "enum": ["House", "Apartment", "Room", "Office"] },
+        "price": { "type": "integer" },
+        "beds": { "type": "integer" },
+        "baths": { "type": "integer" },
+        "sqft": { "type": "integer" },
+        "rating": { "type": "number" },
+        "reviewsCount": { "type": "integer" },
+        "imageColor": { "type": "string", "maxLength": 128 },
+        "locationName": { "type": "string", "maxLength": 256 },
+        "region": { "type": "string", "enum": ["Dhanmondi", "Bashundhara", "Uttara", "Mirpur", "Gulshan", "Banani"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "amenities": { "type": "array" },
+        "isApproved": { "type": "boolean" },
+        "isFeatured": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "host": { "type": "object" }
+      },
+      "required": ["id", "title", "description", "type", "price", "beds", "baths", "sqft", "locationName", "isApproved", "host", "createdAt"]
+    },
+    "chat": {
+      "title": "Chat Thread",
+      "description": "Represents a message thread between a tenant and a landlord for a listing.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "propertyId": { "type": "string", "maxLength": 128 },
+        "propertyTitle": { "type": "string", "maxLength": 256 },
+        "tenantId": { "type": "string", "maxLength": 128 },
+        "tenantName": { "type": "string", "maxLength": 128 },
+        "landlordId": { "type": "string", "maxLength": 128 },
+        "landlordName": { "type": "string", "maxLength": 128 },
+        "lastMessageText": { "type": "string", "maxLength": 2000 },
+        "lastMessageTimestamp": { "type": "string" }
+      },
+      "required": ["id", "propertyId", "propertyTitle", "tenantId", "tenantName", "landlordId", "landlordName", "lastMessageText", "lastMessageTimestamp"]
+    },
+    "message": {
+      "title": "Chat Message",
+      "description": "Chronological text message sent within a specific chat thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderRole": { "type": "string", "enum": ["customer", "owner", "company"] },
+        "text": { "type": "string", "maxLength": 2000 },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "senderId", "senderRole", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User identity profiles and account information."
+    },
+    "/properties/{propertyId}": {
+      "schema": "property",
+      "description": "Database of available housing and office rental listings."
+    },
+    "/chats/{chatId}": {
+      "schema": "chat",
+      "description": "Active communication channels between tenants and landlords."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "message",
+      "description": "Chronological history of messages exchanged inside a chat thread."
+    }
+  }
+}

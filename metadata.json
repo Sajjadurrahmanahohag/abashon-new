@@ -1,0 +1,6 @@
+{
+  "name": "Abashon",
+  "description": "Easy Rentals, Better Living. Interactive home and apartment rental platform for Dhaka districts with map-based queries, real-time chats, landlord posting, and multilanguage options.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
