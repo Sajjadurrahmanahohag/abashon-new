@@ -29,6 +29,9 @@ interface OwnerPortalProps {
   ownerAdDesc: string;
   setOwnerAdDesc: React.Dispatch<React.SetStateAction<string>>;
   handleOwnerAdSubmit: (e: React.FormEvent) => void;
+  googleToken?: string | null;
+  setGoogleToken?: React.Dispatch<React.SetStateAction<string | null>>;
+  handleGoogleLogin?: () => Promise<void>;
 }
 
 const OwnerPortal: React.FC<OwnerPortalProps> = ({
@@ -56,6 +59,9 @@ const OwnerPortal: React.FC<OwnerPortalProps> = ({
   ownerAdDesc,
   setOwnerAdDesc,
   handleOwnerAdSubmit,
+  googleToken,
+  setGoogleToken,
+  handleGoogleLogin,
 }) => {
   return (
     <div className="space-y-6 animate-fade-in" id="portal_owner_view">

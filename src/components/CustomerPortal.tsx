@@ -1,8 +1,9 @@
 
-import React from 'react';
-import { User, Search, MapPin, LayoutGrid, Heart, Plus, Bell, Compass, Map as MapIcon, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Search, MapPin, LayoutGrid, Heart, Plus, Bell, Compass, Map as MapIcon, X, Calendar, MessageSquare, Folder, CheckCircle2, Globe, RefreshCw, FileText, ChevronLeft, Loader2 } from 'lucide-react';
 import { AppUser, Property, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
+import { createCalendarEvent, createGoogleChatSpace, listDriveFiles, saveToGoogleDrive, DriveFileInfo } from '../lib/workspace';
 
 interface CustomerPortalProps {
   isLoggedIn: boolean;
@@ -26,6 +27,9 @@ interface CustomerPortalProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
   handleMapClick: (e: React.MouseEvent<SVGSVGElement>) => void;
   handleMapMouseMove: (e: React.MouseEvent<SVGSVGElement>) => void;
+  googleToken?: string | null;
+  setGoogleToken?: React.Dispatch<React.SetStateAction<string | null>>;
+  handleGoogleLogin?: () => Promise<void>;
 }
 
 const CustomerPortal: React.FC<CustomerPortalProps> = ({
@@ -50,7 +54,193 @@ const CustomerPortal: React.FC<CustomerPortalProps> = ({
   svgRef,
   handleMapClick,
   handleMapMouseMove,
+  googleToken,
+  setGoogleToken,
+  handleGoogleLogin,
 }) => {
+  // --- GOOGLE WORKSPACE INTEGRATION STATES ---
+  const [driveFiles, setDriveFiles] = useState<DriveFileInfo[]>([]);
+  const [isLoadingDrive, setIsLoadingDrive] = useState(false);
+  const [driveError, setDriveError] = useState<string | null>(null);
+
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
+  const [selectedTime, setSelectedTime] = useState('14:00');
+  const [isCreatingEvent, setIsCreatingEvent] = useState(false);
+  const [calendarSuccess, setCalendarSuccess] = useState<string | null>(null);
+
+  const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const [chatSpaceUrl, setChatSpaceUrl] = useState<string | null>(null);
+  const [chatSuccess, setChatSuccess] = useState<string | null>(null);
+
+  const [isSavingDoc, setIsSavingDoc] = useState(false);
+  const [docSuccess, setDocSuccess] = useState<string | null>(null);
+
+  // Mandatory user confirmation modal before mutating data (Calendar, Chat, Drive write)
+  const [confirmationModal, setConfirmationModal] = useState<{
+    type: 'calendar' | 'chat' | 'drive';
+    title: string;
+    message: string;
+    action: () => Promise<void>;
+  } | null>(null);
+
+  // --- ACTIONS & EFFECT HANDLERS ---
+  const fetchDriveFiles = async () => {
+    if (!googleToken) return;
+    setIsLoadingDrive(true);
+    setDriveError(null);
+    try {
+      const files = await listDriveFiles(googleToken);
+      setDriveFiles(files);
+    } catch (err: any) {
+      console.error(err);
+      setDriveError(err.message || 'Failed to list Google Drive files');
+    } finally {
+      setIsLoadingDrive(false);
+    }
+  };
+
+  useEffect(() => {
+    if (googleToken) {
+      fetchDriveFiles();
+    }
+  }, [googleToken]);
+
+  // Find active property details
+  const activeProperty = properties.find((p) => p.id === selectedPropertyId) || properties[0];
+
+  // 1. Google Calendar Event Creation helper
+  const handleScheduleViewing = async () => {
+    if (!googleToken || !activeProperty) return;
+    
+    const requestAction = async () => {
+      setIsCreatingEvent(true);
+      setCalendarSuccess(null);
+      try {
+        const startISO = `${selectedDate}T${selectedTime}:00`;
+        const endHour = parseInt(selectedTime.split(':')[0]) + 1;
+        const endMinutes = selectedTime.split(':')[1];
+        const endISO = `${selectedDate}T${String(endHour).padStart(2, '0')}:${endMinutes}:00`;
+
+        await createCalendarEvent({
+          summary: `Property Viewing: ${activeProperty.title}`,
+          location: activeProperty.locationName || 'Dhaka, Bangladesh',
+          description: `Scheduled view/tour of "${activeProperty.title}". Price: ৳${activeProperty.price.toLocaleString()} Rent/month. Organized via Abashon Real Estate App.`,
+          startTime: startISO,
+          endTime: endISO,
+        }, googleToken);
+
+        setCalendarSuccess(`Viewing scheduled successfully on ${selectedDate} at ${selectedTime}!`);
+        logSystemAction(`Renter added viewing appointment to Google Calendar for "${activeProperty.title}"`, 'SUCCESS');
+      } catch (err: any) {
+        console.error(err);
+        logSystemAction(`Google Calendar Event creation failed: ${err.message}`, 'ERROR');
+      } finally {
+        setIsCreatingEvent(false);
+      }
+    };
+
+    setConfirmationModal({
+      type: 'calendar',
+      title: lang === 'EN' ? 'Confirm Calendar Event' : 'ক্যালেন্ডার ইভেন্ট নিশ্চিত করুন',
+      message: lang === 'EN' 
+        ? `Would you like to schedule a viewing for "${activeProperty.title}" on ${selectedDate} at ${selectedTime} and add it directly to your Google Calendar?`
+        : `আপনি কি "${activeProperty.title}" এর জন্য ${selectedDate} তারিখ ${selectedTime} টায় একটি বুকিং সেশন আপনার গুগল ক্যালেন্ডারে যুক্ত করতে চান?`,
+      action: requestAction
+    });
+  };
+
+  // 2. Google Chat Space Creation helper
+  const handleCreateInquiryChatSpace = async () => {
+    if (!googleToken || !activeProperty) return;
+
+    const requestAction = async () => {
+      setIsCreatingChat(true);
+      setChatSuccess(null);
+      try {
+        // Safe alphanumeric and spaces display name for space API
+        const safeName = `Abashon: ${activeProperty.title.replace(/[^a-zA-Z0-9 ]/g, '')}`.slice(0, 50);
+        const space = await createGoogleChatSpace(safeName, googleToken);
+        
+        // Form a generic chat web URL or save displayName
+        setChatSuccess(`Inquiry Chat Space "${space.displayName}" created successfully!`);
+        setChatSpaceUrl(`https://chat.google.com/`);
+        logSystemAction(`Google Chat Space created: "${space.displayName}"`, 'SUCCESS');
+      } catch (err: any) {
+        console.error(err);
+        logSystemAction(`Google Chat Space creation failed: ${err.message}`, 'ERROR');
+      } finally {
+        setIsCreatingChat(false);
+      }
+    };
+
+    setConfirmationModal({
+      type: 'chat',
+      title: lang === 'EN' ? 'Create Google Chat Space' : 'গুগল চ্যাট স্পেস তৈরি করুন',
+      message: lang === 'EN'
+        ? `Would you like to initiate a formal Google Chat Room Space for inquiries about "${activeProperty.title}"?`
+        : `আপনি কি "${activeProperty.title}" সম্পর্কিত আলোচনার জন্য একটি গুগল চ্যাট স্পেস তৈরি করতে চান?`,
+      action: requestAction
+    });
+  };
+
+  // 3. Google Drive Document Export helper
+  const handleExportBrochureToDrive = async () => {
+    if (!googleToken || !activeProperty) return;
+
+    const requestAction = async () => {
+      setIsSavingDoc(true);
+      setDocSuccess(null);
+      try {
+        const docName = `Abashon_Property_Brochure_${activeProperty.id}.txt`;
+        const content = `=====================================================
+ABASHON HOUSING DISCOVERY HUB - OFFICIAL PROPERTY SHEET
+=====================================================
+
+Property Title: ${activeProperty.title}
+Region Name:    ${activeProperty.locationName}
+Monthly Rent:   ৳${activeProperty.price.toLocaleString()} BDT
+Specifications: ${activeProperty.beds} Bedrooms, ${activeProperty.baths} Bathrooms, ${activeProperty.sqft} Sq. Ft.
+Property Type:  ${activeProperty.type}
+
+DESCRIPTION:
+${activeProperty.description}
+
+AMENITIES:
+${activeProperty.amenities.map(a => `- ${a}`).join('\n')}
+
+-----------------------------------------------------
+Document saved via secure Google Drive integration API.
+Printed on: ${new Date().toLocaleDateString()}
+=====================================================`;
+
+        const doc = await saveToGoogleDrive(docName, content, googleToken);
+        setDocSuccess(`Successfully uploaded "${doc.name}" to Google Drive!`);
+        logSystemAction(`Uploaded property listing sheet for "${activeProperty.title}" to Google Drive`, 'SUCCESS');
+        
+        // Refresh the file list
+        fetchDriveFiles();
+      } catch (err: any) {
+        console.error(err);
+        logSystemAction(`Failed to save document to Google Drive: ${err.message}`, 'ERROR');
+      } finally {
+        setIsSavingDoc(false);
+      }
+    };
+
+    setConfirmationModal({
+      type: 'drive',
+      title: lang === 'EN' ? 'Save Document to Google Drive' : 'গুগল ড্রাইভে ডকুমেন্ট সংরক্ষণ',
+      message: lang === 'EN'
+        ? `Would you like to generate and export a professional listing brochure for "${activeProperty.title}" as a text document in your Google Drive?`
+        : `আপনি কি "${activeProperty.title}" এর জন্য একটি পেশাদার তথ্যপত্র টেক্সট আকারে আপনার গুগল ড্রাইভে সংরক্ষণ করতে চান?`,
+      action: requestAction
+    });
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in" id="portal_customer_view">
       
@@ -157,6 +347,324 @@ const CustomerPortal: React.FC<CustomerPortalProps> = ({
                       <Plus className="w-4 h-4 text-slate-300 group-hover:text-emerald-500 transition-transform group-hover:rotate-45" />
                     </button>
                   </div>
+
+                  {/* Google Drive Document Integration section on Profile page */}
+                  {googleToken && (
+                    <div className="space-y-3 mt-4 border-t border-slate-200 dark:border-slate-800 pt-4">
+                      <div className="flex items-center justify-between">
+                        <h5 className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                          {lang === 'EN' ? 'Connected Google Drive Docs' : 'কানেক্টেড গুগল ড্রাইভ ফাইল'}
+                        </h5>
+                        <button onClick={fetchDriveFiles} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition" title="Refresh Drive">
+                          <RefreshCw className={`w-3.5 h-3.5 text-slate-500 ${isLoadingDrive ? 'animate-spin' : ''}`} />
+                        </button>
+                      </div>
+
+                      {isLoadingDrive ? (
+                        <div className="flex items-center justify-center py-6 text-slate-400">
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider">Loading...</span>
+                        </div>
+                      ) : driveFiles.length > 0 ? (
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                          {driveFiles.map((file) => (
+                            <a
+                              key={file.id}
+                              href={file.webViewLink || '#'}
+                              target="_blank"
+                              rel="noreferrer"
+                              className={`p-2.5 rounded-xl border flex items-center justify-between hover:border-emerald-500/40 transition ${
+                                darkMode ? 'bg-slate-900 border-slate-800 hover:bg-slate-850' : 'bg-white border-slate-150 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <FileText className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                                <span className="text-[10px] font-bold truncate text-slate-700 dark:text-slate-200">
+                                  {file.name}
+                                </span>
+                              </div>
+                              <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">View File</span>
+                            </a>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-400 text-center font-bold uppercase tracking-wide py-4 bg-slate-50 dark:bg-slate-900/50 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800">
+                          No files found in Google Drive
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* FULLY DETAILED PROPERTY DETAILS SCREEN */}
+            {activeScreen === 'details' && activeProperty && (
+              <div className="space-y-6 animate-fade-in pb-12">
+                <div className="flex items-center justify-between">
+                  <button
+                    onClick={() => {
+                      setActiveScreen('home');
+                      setCalendarSuccess(null);
+                      setChatSuccess(null);
+                      setDocSuccess(null);
+                    }}
+                    className="flex items-center gap-1.5 text-[10px] font-black text-emerald-500 uppercase tracking-widest hover:text-emerald-600 transition"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>{lang === 'EN' ? 'Back to Listings' : 'তালিকায় ফিরে যান'}</span>
+                  </button>
+                  <span className="text-[10px] font-black text-slate-400 uppercase bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
+                    ID: {activeProperty.id}
+                  </span>
+                </div>
+
+                {/* Cover Gradient/Image Box */}
+                <div className={`w-full h-40 rounded-3xl bg-gradient-to-br ${activeProperty.imageColor} shadow-inner flex items-center justify-center text-white text-3xl font-black relative overflow-hidden`}>
+                  <div className="absolute inset-0 bg-black/10 backdrop-brightness-95"></div>
+                  <span className="relative z-10 filter drop-shadow">{activeProperty.type}</span>
+                </div>
+
+                {/* Primary Meta info */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-white bg-emerald-500 px-2 py-0.5 rounded-md uppercase tracking-tight">Verified Real Estate</span>
+                    <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md uppercase tracking-tight">{activeProperty.type}</span>
+                  </div>
+                  <h3 className={`text-lg font-black leading-tight ${darkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {activeProperty.title}
+                  </h3>
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
+                    <MapPin className="w-3.5 h-3.5 text-rose-500" />
+                    <span>{activeProperty.locationName || 'Dhaka Metro'}</span>
+                  </div>
+                  <div className="text-xl font-black text-emerald-500 mt-2">
+                    ৳{activeProperty.price.toLocaleString()} <span className="text-xs font-bold text-slate-400 lowercase">/ month</span>
+                  </div>
+                </div>
+
+                {/* Core specifications */}
+                <div className="grid grid-cols-3 gap-2.5">
+                  <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-850 border-slate-800' : 'bg-slate-50 border-slate-150'}`}>
+                    <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Sq. Footage</span>
+                    <strong className="text-xs font-black text-emerald-500">{activeProperty.sqft} sqft</strong>
+                  </div>
+                  <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-850 border-slate-800' : 'bg-slate-50 border-slate-150'}`}>
+                    <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Bedrooms</span>
+                    <strong className="text-xs font-black text-emerald-500">{activeProperty.beds} Bed</strong>
+                  </div>
+                  <div className={`p-3 rounded-2xl border text-center ${darkMode ? 'bg-slate-850 border-slate-800' : 'bg-slate-50 border-slate-150'}`}>
+                    <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Bathrooms</span>
+                    <strong className="text-xs font-black text-emerald-500">{activeProperty.baths} Bath</strong>
+                  </div>
+                </div>
+
+                {/* Amenities section */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400">Included Amenities</h4>
+                  <div className="flex flex-wrap gap-1.5">
+                    {activeProperty.amenities.map((amenity, idx) => (
+                      <span key={idx} className={`text-[10px] font-bold px-3 py-1 rounded-xl border ${darkMode ? 'bg-slate-850 border-slate-800 text-slate-300' : 'bg-slate-50 border-slate-150 text-slate-700'}`}>
+                        {amenity}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400">Description</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-semibold">
+                    {activeProperty.description}
+                  </p>
+                </div>
+
+                {/* ======================================================== */}
+                {/* GOOGLE WORKSPACE SYSTEM INTEGRATIONS HUB */}
+                {/* ======================================================== */}
+                <div className={`rounded-3xl border p-5 space-y-4 shadow-sm transition-all ${
+                  darkMode ? 'bg-slate-900 border-emerald-500/20 shadow-slate-950/40' : 'bg-emerald-500/5 border-emerald-500/10 shadow-emerald-500/5'
+                }`} id="google_workspace_hub">
+                  <div className="flex items-center gap-2 border-b border-emerald-500/10 pb-3">
+                    <Globe className="w-5 h-5 text-emerald-500" />
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-widest text-emerald-500 leading-tight">
+                        {lang === 'EN' ? 'Google Workspace Portal' : 'গুগল ওয়ার্কস্পেস পোর্টাল'}
+                      </h4>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase mt-0.5">
+                        {lang === 'EN' ? 'Integrated Cloud Services' : 'ইন্টিগ্রেটেড ক্লাউড সার্ভিসসমূহ'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!googleToken ? (
+                    <div className="py-2 text-center space-y-3">
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium leading-relaxed">
+                        {lang === 'EN' 
+                          ? 'Unlock Google Cloud Services. Sign in with Google to schedule viewing events on your Calendar, create dynamic Chat inquires, and export documents directly to Drive!'
+                          : 'গুগল ক্লাউড সেবাসমূহ আনলক করুন। আপনার গুগল অ্যাকাউন্টে লগইন করে সরাসরি ক্যালেন্ডার সেশন, চ্যাট রুম এবং ড্রাইভে ফাইল আপলোড করুন!'}
+                      </p>
+                      
+                      <button
+                        type="button"
+                        onClick={handleGoogleLogin}
+                        className="w-full flex items-center justify-center gap-2.5 py-3 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-100 border border-slate-200 dark:border-slate-750 font-black text-[10px] uppercase tracking-wider rounded-2xl shadow-sm transition-all"
+                      >
+                        <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4">
+                          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                        </svg>
+                        <span>{lang === 'EN' ? 'Authorize Google Workspace' : 'গুগল অ্যাকাউন্ট সংযুক্ত করুন'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-5">
+                      
+                      {/* 1. GOOGLE CALENDAR MODULE */}
+                      <div className="space-y-2 bg-white dark:bg-slate-850 p-3.5 rounded-2xl border border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <Calendar className="w-4 h-4 text-emerald-500" />
+                          <h5 className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                            {lang === 'EN' ? '1. Google Calendar Scheduling' : '১. গুগল ক্যালেন্ডার বুকিং'}
+                          </h5>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-black text-slate-400 uppercase">Viewing Date</label>
+                            <input
+                              type="date"
+                              value={selectedDate}
+                              onChange={(e) => setSelectedDate(e.target.value)}
+                              className="w-full text-[10px] p-2 bg-slate-50 dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-black text-slate-400 uppercase">Viewing Time</label>
+                            <select
+                              value={selectedTime}
+                              onChange={(e) => setSelectedTime(e.target.value)}
+                              className="w-full text-[10px] p-2 bg-slate-50 dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            >
+                              <option value="09:00">09:00 AM</option>
+                              <option value="10:00">10:00 AM</option>
+                              <option value="11:00">11:00 AM</option>
+                              <option value="12:00">12:00 PM</option>
+                              <option value="14:00">02:00 PM</option>
+                              <option value="15:00">03:00 PM</option>
+                              <option value="16:00">04:00 PM</option>
+                              <option value="17:00">05:00 PM</option>
+                              <option value="18:00">06:00 PM</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {calendarSuccess ? (
+                          <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-[9px] font-bold text-emerald-500 flex items-center gap-1.5 mt-2 animate-fade-in">
+                            <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                            <span>{calendarSuccess}</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isCreatingEvent}
+                            onClick={handleScheduleViewing}
+                            className="w-full py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition mt-2 shadow-sm flex items-center justify-center gap-1.5"
+                          >
+                            {isCreatingEvent ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Scheduling...</span>
+                              </>
+                            ) : (
+                              <span>Schedule Viewing</span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* 2. GOOGLE CHAT MODULE */}
+                      <div className="space-y-2 bg-white dark:bg-slate-850 p-3.5 rounded-2xl border border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="w-4 h-4 text-blue-500" />
+                          <h5 className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                            {lang === 'EN' ? '2. Google Chat Inquiries' : '২. গুগল চ্যাট ইনকোয়ারি'}
+                          </h5>
+                        </div>
+
+                        {chatSuccess ? (
+                          <div className="space-y-2 mt-2 animate-fade-in">
+                            <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-[9px] font-bold text-emerald-500 flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                              <span>{chatSuccess}</span>
+                            </div>
+                            {chatSpaceUrl && (
+                              <a
+                                href={chatSpaceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="w-full py-2 bg-blue-500 hover:bg-blue-600 text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition shadow-sm flex items-center justify-center gap-1.5"
+                              >
+                                <span>Launch Google Chat Web App</span>
+                              </a>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isCreatingChat}
+                            onClick={handleCreateInquiryChatSpace}
+                            className="w-full py-2 bg-blue-500 hover:bg-blue-600 text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition mt-2 shadow-sm flex items-center justify-center gap-1.5"
+                          >
+                            {isCreatingChat ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Creating Space...</span>
+                              </>
+                            ) : (
+                              <span>Create Chat Space</span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* 3. GOOGLE DRIVE MODULE */}
+                      <div className="space-y-2 bg-white dark:bg-slate-850 p-3.5 rounded-2xl border border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <Folder className="w-4 h-4 text-purple-500" />
+                          <h5 className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                            {lang === 'EN' ? '3. Google Drive Document Export' : '৩. গুগল ড্রাইভ ডকুমেন্ট ব্যাকআপ'}
+                          </h5>
+                        </div>
+
+                        {docSuccess ? (
+                          <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-[9px] font-bold text-emerald-500 flex items-center gap-1.5 mt-2 animate-fade-in">
+                            <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                            <span>{docSuccess}</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isSavingDoc}
+                            onClick={handleExportBrochureToDrive}
+                            className="w-full py-2 bg-purple-500 hover:bg-purple-600 text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition mt-2 shadow-sm flex items-center justify-center gap-1.5"
+                          >
+                            {isSavingDoc ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Exporting...</span>
+                              </>
+                            ) : (
+                              <span>Save Brochure to Drive</span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -335,6 +843,50 @@ const CustomerPortal: React.FC<CustomerPortalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* CONFIRMATION MODAL OVERLAY */}
+      {confirmationModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fade-in">
+          <div className={`w-full max-w-sm p-6 rounded-3xl border shadow-2xl space-y-4 ${
+            darkMode ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-100 text-slate-900'
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center flex-shrink-0">
+                <Globe className="w-5 h-5 animate-pulse" />
+              </div>
+              <h3 className="text-xs font-black uppercase tracking-wider">
+                {confirmationModal.title}
+              </h3>
+            </div>
+            
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wide leading-relaxed">
+              {confirmationModal.message}
+            </p>
+            
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmationModal(null)}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-450 font-bold text-[10px] uppercase tracking-wider rounded-xl transition"
+              >
+                {lang === 'EN' ? 'Cancel' : 'বাতিল'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const action = confirmationModal.action;
+                  setConfirmationModal(null);
+                  await action();
+                }}
+                className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[10px] uppercase tracking-wider rounded-xl shadow-lg shadow-emerald-500/20 transition-all hover:-translate-y-0.5"
+              >
+                {lang === 'EN' ? 'Confirm' : 'নিশ্চিত'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

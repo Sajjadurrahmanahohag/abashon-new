@@ -72,6 +72,20 @@ import {
   addDoc 
 } from 'firebase/firestore';
 
+// Google Workspace Integrations
+import {
+  googleSignIn,
+  getAccessToken,
+  setCachedToken,
+  initWorkspaceAuth,
+  workspaceSignOut,
+  createCalendarEvent,
+  listCalendarEvents,
+  createGoogleChatSpace,
+  listDriveFiles,
+  saveToGoogleDrive
+} from './lib/workspace';
+
 export default function App() {
   // --- Portal Context Router State ---
   // 'customer' | 'owner' | 'company'
@@ -91,6 +105,7 @@ export default function App() {
   const [regPassword, setRegPassword] = useState<string>('');
   const [regPhone, setRegPhone] = useState<string>('');
   const [regRole, setRegRole] = useState<'customer' | 'owner' | 'company'>('customer');
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
 
   // --- Core States Shared across all Portals ---
   const [properties, setProperties] = useState<Property[]>(() => {
@@ -252,6 +267,20 @@ export default function App() {
         // No user authenticated
       }
     });
+    return () => unsubscribe();
+  }, []);
+
+  // 1b. Sync Google Workspace Auth
+  useEffect(() => {
+    const unsubscribe = initWorkspaceAuth(
+      (user, token) => {
+        setGoogleToken(token);
+        logSystemAction(`Google Workspace authenticated. Token cached.`, 'SUCCESS');
+      },
+      () => {
+        setGoogleToken(null);
+      }
+    );
     return () => unsubscribe();
   }, []);
 
@@ -471,6 +500,49 @@ export default function App() {
   };
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    setIsLoggingIn(true);
+    try {
+      logSystemAction(`Initiating Google Sign-In popup...`, 'INFO');
+      const result = await googleSignIn();
+      if (result) {
+        const { user: fbUser, accessToken } = result;
+        setGoogleToken(accessToken);
+        
+        const userDocRef = doc(db, 'users', fbUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        if (userDoc.exists()) {
+          const userData = userDoc.data() as AppUser;
+          setCurrentUser(userData);
+          setIsLoggedIn(true);
+          setActivePortal(userData.role);
+          logSystemAction(`Google account signed in successfully: ${userData.name} (${userData.role})`, 'SUCCESS');
+        } else {
+          // Register user
+          const name = fbUser.displayName || fbUser.email?.split('@')[0] || 'Google User';
+          const email = fbUser.email || '';
+          const newUser: AppUser = {
+            id: fbUser.uid,
+            name: name,
+            email: email,
+            role: 'customer', // default role
+            avatar: name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+          };
+          await setDoc(userDocRef, newUser);
+          setCurrentUser(newUser);
+          setIsLoggedIn(true);
+          setActivePortal('customer');
+          logSystemAction(`Google user profile registered: ${name}`, 'SUCCESS');
+        }
+      }
+    } catch (error: any) {
+      console.error("Google login failed: ", error);
+      logSystemAction(`Google Sign-In failed: ${error.message || error}`, 'ERROR');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1003,6 +1075,29 @@ export default function App() {
                     ? (lang === 'EN' ? 'Authenticating...' : 'যাচাই করা হচ্ছে...') 
                     : (lang === 'EN' ? 'Sign In to Abashon' : 'লগইন করুন')}
                 </button>
+
+                <div className="relative my-4 flex py-1 items-center">
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                  <span className="flex-shrink mx-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    {lang === 'EN' ? 'or' : 'অথবা'}
+                  </span>
+                  <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  disabled={isLoggingIn}
+                  className="w-full flex items-center justify-center gap-2.5 py-3.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-100 border border-slate-200 dark:border-slate-750 font-black text-xs uppercase tracking-wider rounded-2xl shadow-sm transition-all hover:-translate-y-0.5 active:translate-y-0"
+                >
+                  <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                  </svg>
+                  {lang === 'EN' ? 'Sign in with Google' : 'গুগল দিয়ে সাইন ইন'}
+                </button>
               </form>
             ) : (
               <form onSubmit={handleRegister} className="space-y-4 animate-fade-in">
@@ -1258,6 +1353,9 @@ export default function App() {
                 svgRef={svgRef}
                 handleMapClick={handleMapClick}
                 handleMapMouseMove={handleMapMouseMove}
+                googleToken={googleToken}
+                setGoogleToken={setGoogleToken}
+                handleGoogleLogin={handleGoogleLogin}
               />
             </motion.div>
           )}
@@ -1298,6 +1396,9 @@ export default function App() {
                 ownerAdDesc={ownerAdDesc}
                 setOwnerAdDesc={setOwnerAdDesc}
                 handleOwnerAdSubmit={handleOwnerAdSubmit}
+                googleToken={googleToken}
+                setGoogleToken={setGoogleToken}
+                handleGoogleLogin={handleGoogleLogin}
               />
             </motion.div>
           )}
